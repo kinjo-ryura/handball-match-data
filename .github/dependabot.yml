@@ -1,0 +1,16 @@
+# Dependabot の更新設定。
+#
+# **SHA ピン留めと対で要る。** `validate.yml` の Action を完全な commit SHA で固定しているので、
+# 放置すると上流の修正が入ってこない。Dependabot は SHA と末尾コメントのバージョンを両方書き換える。
+#
+# **対象は github-actions だけ。** このリポは配信データ（JSON）しか持たず、パッケージマニフェストが無い
+# （検証 CLI は handball-toolkit 側）。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

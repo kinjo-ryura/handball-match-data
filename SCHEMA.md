@@ -1,0 +1,469 @@
+# JSON スキーマ仕様 (schemaVersion=2)
+
+アプリ「ハンド記録」が読むサンプル試合データの仕様。
+
+`corpus/...` の名前は、検証 CLI（[handball-toolkit](https://github.com/kinjo-ryura/handball-toolkit) の `handball-toolkit-cli validate`）が出す指摘の名前。
+
+形の要点:
+- `MatchConfiguration` は tagged union (`kind` discriminator + sub-payload)
+- phase の情報は `phaseStart` fact から再現する（試合の設定に phase の表を持たない）
+- `ControlFact` は 2 case sum type (`phaseStart` / `stoppage`)
+- `MatchClock` は試合通算累積秒 (phase 内秒数ではない)
+
+すべての日付フィールドは ISO 8601 文字列。
+
+### `date` と `recordedAt` の使い分け
+
+- **`date`（`index.json` / `match.date`）は試合開始日時**。「いつ記録したか」ではなく「いつ試合が行われたか」を表す。動画から後日記録したハイライトでも、`date` は試合当日を指す（例: 2026-04-10 の試合を 2026-05-09 に記録した場合も `date` は `2026-04-10T05:32:00Z`）。slug の先頭 `{yyyy-MM-dd}` と日付部分が一致することが不変条件（検証 CLI の `corpus/slugDateMismatch`）。
+- **試合開始時刻が不明な場合は `T00:00:00Z`** を使う（日付しか分からない試合）。分かっている場合のみ実際の開始時刻を入れる。
+- **`facts[].recordedAt` が記録日時**。アプリが fact を記録した実時刻で、`date` とは独立に動く。
+
+## ファイル配置
+
+```
+/
+  SCHEMA.md
+  matches/
+    index.json      注目の試合の一覧
+    {slug}.json     試合の本体（大会の試合もここに置く）
+  highlights/
+    index.json      ハイライトの一覧
+    {slug}.json     ハイライトの本体
+  competitions/
+    index.json      大会の名簿
+    {id}.json       大会（部門を持つ大会は部門）ごとの試合の一覧
+```
+
+3 つの一覧（`matches/index.json`・`highlights/index.json`・`competitions/index.json`）は、それぞれのディレクトリの中に置く。
+版はディレクトリの名前ではなく、各 JSON の `schemaVersion` で表す。
+
+## `/matches/index.json`
+
+```jsonc
+{
+  "schemaVersion": 2,
+  "matches": [
+    {
+      "slug": "2025-04-15-tigers-vs-falcons",
+      "displayName": "Tigers vs Falcons",
+      "description": "前後半で得点が大きく動いた一戦",
+      "date": "2025-04-15T13:00:00Z",
+      "homeScore": 24,
+      "awayScore": 22,
+      "hasVideo": true
+    }
+  ]
+}
+```
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `schemaVersion` | Int | ✓ | `2` |
+| `matches[].slug` | String | ✓ | `matches/{slug}.json` のファイル名 (拡張子除く) と完全一致 |
+| `matches[].displayName` | String | ✓ | 表示名 |
+| `matches[].description` | String? | | 1 文の見どころ |
+| `matches[].date` | Date | ✓ | 試合開始日時。本体の `match.date` と一致必須（検証 CLI の `corpus/dateMismatch`） |
+| `matches[].homeScore` | Int | ✓ | goal 集計結果を手動転記 |
+| `matches[].awayScore` | Int | ✓ | 同上 |
+| `matches[].hasVideo` | Bool | ✓ | `.video` / `.videoHighlight` のとき true |
+| `matches[].homeTeamName` | String? | | 本体 `teams.home.name` の転記。**大会の一覧では必須**（下の「大会」節）。書いてあれば本体と一致必須（`corpus/teamNameMismatch`） |
+| `matches[].awayTeamName` | String? | | 同上（`teams.away.name`） |
+| `matches[].homeTeamShortName` | String? | | ホームの短い名前（略称。例: `"TMEJ"`）。アプリは一覧の行で正式名の代わりに出し、無ければ正式名。書くなら `homeTeamName` も必須（`corpus/shortNameWithoutTeamName`）・空文字は不可（`corpus/emptyTeamShortName`）。下の「短い名前」 |
+| `matches[].awayTeamShortName` | String? | | 同上（アウェイ） |
+
+`matches` 配列は **`date` 降順**（新しい試合が上）で維持する（検証 CLI の `corpus/indexNotDateDescending`）。アプリは配列順をそのまま表示に使う。
+
+### 短い名前
+
+リーグH の正式名は最長 17 字（「安芸高田わくながハンドボールクラブ」）あり、一覧の行では 2〜3 行に折り返し、表では iPhone の幅の大半を取る。
+そこで**一覧の項目と表には短い名前を書く**。中身はチームの略称（`TMEJ`・`Z東京`・`BK刈谷` など）。どのチームをどの略称にするかは配信側が決める（アプリは対応表を持たない）。
+
+- 一覧の項目には `homeTeamShortName` / `awayTeamShortName` を、表にはセルと凡例（下の「表」の `legend`）を書く
+- **短い名前を決めていないチームは書かない**（アプリは正式名を出す）。正式名と同じ短い名前も書かない
+- **試合本体（`matches/{slug}.json`）には書かない。** 試合画面は正式名のまま（本体のチームは端末に保存する試合の形とつながっていて、
+  欄を足すとアプリの保存の形まで変わる）。一覧の行をタップすれば正式名の試合画面が開く
+- 短い名前を変えるときは、すべての一覧の項目と表を合わせて書き直す（一覧ごとに違う略称を出さない）
+
+## `/competitions/`（大会）
+
+**大会**は、「注目の試合」（`/matches/index.json`）とは別に配信する試合のまとまり。
+1 シーズン分のリーグ戦のように数百試合になるものを、注目の試合の一覧に混ぜずに出すためのもの。
+アプリは「注目の試合」の上に大会ごとのバナーを出し、タップでその大会の試合だけを一覧にする。
+大会が男子・女子・年代のような**部門**に分かれるときは、バナーは大会に 1 本で、押した先で部門を切り替える（下の「部門」）。
+季が終わったら `competitions/index.json` から外す（本体と一覧ファイルは残してよい。試合 URL は開き続ける）。
+
+```jsonc
+// /competitions/index.json
+{
+  "schemaVersion": 2,
+  "competitions": [
+    {
+      "id": "league-h-2026-27",
+      "title": "リーグH 2026-27",
+      "description": "2026-27 シーズンの全試合（タイマーモード・動画なし）",
+      "divisions": [
+        { "id": "league-h-2026-27-men", "title": "男子" },
+        { "id": "league-h-2026-27-women", "title": "女子" }
+      ]
+    },
+    {
+      "id": "spring-cup-2027",
+      "title": "春季大会 2027",
+      "description": "部門を持たない大会（大会の id がそのまま一覧ファイルの名前）"
+    }
+  ]
+}
+```
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `schemaVersion` | Int | ✓ | `2` |
+| `competitions[].id` | String | ✓ | 大会の識別子。**部門を持たない大会では** `competitions/{id}.json` のファイル名（拡張子除く）と完全一致。字種は slug と同じ（英数字と `-`、1〜64 文字）。`index` は予約語（`corpus/unsafeCompetitionID`） |
+| `competitions[].title` | String | ✓ | 画面に出す大会名（バナーの題）。部門名は入れない |
+| `competitions[].description` | String? | | 1 文の説明（バナーの副題） |
+| `competitions[].divisions[]` | Object[]? | | 部門（下の「部門」）。書くなら 1 つ以上（`corpus/emptyCompetitionDivisions`）。無ければ部門を持たない大会 |
+| `competitions[].divisions[].id` | String | ✓ | `competitions/{id}.json` のファイル名（拡張子除く）と完全一致。字種と予約語は大会の id と同じ |
+| `competitions[].divisions[].title` | String | ✓ | 切替に出す部門名（例: `"男子"`）。大会名は繰り返さない |
+
+`competitions` 配列は**アプリがバナーを出す順**、`divisions` 配列は**部門の切替の順**。並びの規則は持たない（配列順をそのまま使う）。
+**大会と部門の id は名簿全体で一意**（`corpus/duplicateCompetitionID`）— どちらも同じ置き場のファイル名になるので、片方の中だけで一意にしても同じファイルを 2 つの項目が指しうる。
+`competitions/index.json` が無い（404）ことは「大会を配信していない」として扱い、アプリは失敗にしない。
+
+```jsonc
+// /competitions/{id}.json（部門を持つ大会は部門の id）— /matches/index.json と同じ形に、節 / 回戦のラベルと表を足したもの
+{
+  "schemaVersion": 2,
+  "matches": [
+    {
+      "slug": "2026-10-12-tigers-vs-falcons",
+      "displayName": "Tigers vs Falcons",
+      "description": "2026-27 レギュラーシーズンのタイマーモード版（動画なし）",
+      "date": "2026-10-12T04:00:00Z",
+      "homeScore": 24,
+      "awayScore": 22,
+      "hasVideo": false,
+      "homeTeamName": "Tigers",
+      "awayTeamName": "Falcons",
+      "round": "第1節"
+    }
+  ],
+  "tables": [
+    {
+      "id": "standings",
+      "title": "順位表",
+      "columns": [
+        { "title": "順位", "align": "trailing" },
+        { "title": "チーム", "align": "leading" },
+        { "title": "勝点", "align": "trailing" }
+      ],
+      "rows": [
+        ["1", "Tigers", "2"],
+        ["2", "Falcons", "0"]
+      ]
+    }
+  ]
+}
+```
+
+- 項目の形と slug の規則は `/matches/index.json` と同じ。**`homeTeamName` / `awayTeamName` は必須**（`corpus/missingTeamName`）— アプリは大会の一覧を**本体を取らずに**項目だけで描く（数百試合の本体を一覧のたびに取らないため）
+- **`matches[].round`（String、任意）は節 / 回戦の表示ラベル**（例: `"第1節"`・`"準決勝"`・`"プレーオフ 準決勝"`・`"予選リーグ A組"`）。アプリは一覧の並びのまま、**同じラベルが続く行を 1 つのセクション**にまとめ、ラベルを見出しに出す。ラベルの無い行は見出しの無いセクションになる。文言は配信側が組む（アプリは語を足さない）
+- **大会の一覧の並びは配信側が決める**（`date` 降順の縛りは `/matches/index.json` だけ）。配信中の大会は節 / 回戦の新しい順 → `date` 降順に並べている（ラベル中の数字で順を取り、数字の無いラベル — 決勝・プレーオフなど — を先頭に置く）。延期した試合も本来の節に入る。検証 CLI は、同じ `round` が離れて 2 回現れないこと（`corpus/roundNotContiguous`）と、同じ `round` の中が `date` 降順であること（`corpus/indexNotDateDescending`）を見る
+- **本体は `/matches/{slug}.json` を共有する。** 試合 URL（`?match=<slug>`）とアプリの直接取得は本体の置き場しか見ないので、大会の試合も同じ URL で開ける
+- **1 つの本体は `/matches/index.json` か 1 つの一覧（大会か部門）のどちらか一方にだけ載せる**（`corpus/slugListedTwice`）。どこにも載らない本体は `corpus/orphanMatchFile`
+- 大会の一覧にはフル試合だけを載せる（ハイライトは `/highlights/`）。アプリは `hasVideo` からモードを決める（false = タイマー、true = 動画）
+- 検証 CLI の突合: 名簿の一覧の id（部門を持たない大会の id と、部門の id）に一覧ファイルが無い（`corpus/missingCompetitionFile`）・名簿のどの一覧の id でもない一覧ファイル（`corpus/orphanCompetitionFile`。部門を持つ大会の id の名前のファイルもこれになる）・id の重複（`corpus/duplicateCompetitionID`）
+
+### 一覧 1 つ = 順位表 1 つ・山 1 つ
+
+男子と女子のように**順位表や山が別になるものは、別の一覧（`competitions/{id}.json`）として配信する**。
+リーグ戦でもトーナメントでも、この規則 1 つで配信側が分けられ、アプリは「一覧 1 つに表 1 組」しか知らなくてよい。
+レギュラーシーズンとプレーオフのような**段階は同じ一覧に入れ**、`round` のラベル（「第1節」「プレーオフ 準決勝」）で分ける。
+
+### 部門（`divisions[]`）
+
+**部門**は、1 つの大会の中で順位表と節が別になる区分（男子・女子・中学 / 高校のような年代）。部門ごとに一覧ファイルを 1 つ持ち、
+名簿では大会の項目の `divisions[]` に並べる（例: 大会 `league-h-2026-27` の部門 `league-h-2026-27-men` / `-women`）。
+
+- **バナーは大会に 1 本。** アプリは押した先で部門を切り替え（`divisions` の順。部門が 1 つなら切替を出さない）、選んだ部門の一覧を読む。
+  男女を別の大会にするとバナーが 2 本並び、注目の試合が画面の外へ押し出されるので、まとめる単位を名簿に持たせている
+- **部門をまたいで 1 つの一覧に混ぜない。** 混ぜると表の切替が「表の種類 × 部門」の数になり、節が部門ごとに交互に並ぶ
+- **部門の意味（男女・年代）を表す項目は持たない。** アプリは `title` をそのまま出すだけで、部門の種類が増えても改修しない
+- 部門を持たない大会は `divisions` を書かず、大会の id の一覧ファイルを 1 つ持つ
+
+**大会の形式（リーグ / トーナメント）を表す項目は持たない。** アプリの表示に要るのは「試合をどう区切るか」（`round`）と
+「どの表を出すか」（`tables`）の 2 つだけで、リーグ戦らしい画面（節 + 順位表）もトーナメントらしい画面（回戦だけ）も
+データの中身からそうなる。形式名でアプリが分岐すると、形式が増えるたびにアプリの改修になる。山形（対戦の親子）を
+描くときは、そのときに必要な構造を任意項目として足す（任意項目の追加は `schemaVersion` を上げず、旧アプリは無視する）。
+
+### 表（`tables[]`）
+
+順位表・得点ランキング・星取表のような**大会ごとの表**。大会の一覧ファイル（`competitions/{id}.json`）の任意項目で、
+`/matches/index.json` には書かない（`corpus/unexpectedTables`）。
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `tables[].id` | String | ✓ | 表の識別子（英数字と `-`）。同じ一覧の中で一意（`corpus/duplicateTableID`・`corpus/unsafeTableID`） |
+| `tables[].title` | String | ✓ | 表の題。アプリはこれを切替のラベルに出す（例: `"順位表"`） |
+| `tables[].columns[]` | Object[] | ✓ | 列の定義。1 列以上（`corpus/tableWithoutColumns`） |
+| `tables[].columns[].title` | String | ✓ | 列見出し |
+| `tables[].columns[].align` | String? | | `"leading"`（既定）/ `"trailing"` / `"center"`。数値の列は `trailing` |
+| `tables[].rows[][]` | String[][] | ✓ | 行。各行のセル数は `columns` の数と一致（`corpus/tableRowWidthMismatch`）。セルは表示する文字列そのまま（数値も文字列で書く） |
+| `tables[].legend[]` | Object[]? | | 凡例。セルや列見出しに書いた略した文字と、その意味。アプリは凡例にある文字と**完全に一致する**セル・列見出しをタップされたら `detail` を吹き出しに出し、読み上げも `detail` にする |
+| `tables[].legend[].text` | String | ✓ | セル・列見出しに書いた文字（例: `"TMEJ"`）。表の中で一意（`corpus/duplicateLegendText`）・空文字不可（`corpus/emptyLegendEntry`） |
+| `tables[].legend[].detail` | String | ✓ | 意味（例: `"トヨタ自動車東日本レガロッソ宮城"`）。空文字不可（`corpus/emptyLegendEntry`） |
+
+- **表は汎用で、アプリは列の意味を知らない。** 配信側が題・列・寄せ・中身を決め、アプリは「見出し行を太字・`align` どおりに寄せ・幅が足りなければ横スクロール」の 1 つの描き方で全部の表を出す。順位表でも得点ランキングでも将来の表でも、アプリの改修なしに足せる。列の意味を型で持つと、表の種類が増えるたびに配信とアプリの両方を直すことになる
+- **アプリは見出し行と、先頭から最初の `leading` の列までを固定する**。残りの列だけが横に送られる。行を名指す列（チーム・選手）を先頭に置き、`leading` にする。
+  その右に一番見せたい数字を置く（得点ランキングは 順位・選手・得点・試合・チーム。チームを選手の右に置くと、iPhone の縦では得点が画面の外に出る）
+- **チーム名は短い名前で書き、凡例に正式名を載せる**（上の「短い名前」）。星取表の列見出しもチームの短い名前
+- **中身は配信側が自分のデータから計算する。** 計算できないもの（配信していない数値から作る表）は載せない。表の並び（順位の決め方）は配信側が決める
+- 表の順は配列順。アプリは「試合」の後に表の題を並べる。`tables` が無い・空なら試合の一覧だけを出す（今までと同じ画面）
+
+## `/matches/{slug}.json`
+
+```jsonc
+{
+  "schemaVersion": 2,
+  "match": {
+    "displayName": "Tigers vs Falcons",
+    "date": "2025-04-15T13:00:00Z",
+    "configuration": {
+      "kind": "video",
+      "video": {
+        "source": {
+          "provider": "youtube",
+          "externalID": "abc123"
+        }
+      }
+    }
+  },
+  "teams": {
+    "home": {
+      "key": "home",
+      "name": "Tigers",
+      "players": [
+        { "key": "h_07", "name": "Player A", "jerseyNumber": 7 }
+      ]
+    },
+    "away": {
+      "key": "away",
+      "name": "Falcons",
+      "players": [
+        { "key": "a_05", "name": "Player B", "jerseyNumber": 5 }
+      ]
+    }
+  },
+  "facts": [
+    {
+      "factID": "...",
+      "recordedAt": "2025-04-15T13:00:00Z",
+      "payload": {
+        "kind": "control",
+        "control": {
+          "kind": "phaseStart",
+          "phaseStart": { "kind": "regular" },
+          "anchor": {
+            "kind": "both",
+            "matchClock": { "elapsedSeconds": 0 },
+            "videoClock": { "elapsedSeconds": 0 },
+            "endMatchElapsedSeconds": 1800,
+            "endVideoElapsedSeconds": 1800
+          }
+        }
+      }
+    },
+    {
+      "factID": "...",
+      "recordedAt": "2025-04-15T13:01:35Z",
+      "payload": {
+        "kind": "play",
+        "play": {
+          "kind": "goal",
+          "teamKey": "home",
+          "playerKey": "h_07",
+          "relatedPlayerKey": null,
+          "anchor": {
+            "kind": "videoClock",
+            "videoClock": { "elapsedSeconds": 95.5 }
+          },
+          "title": null,
+          "note": null
+        }
+      }
+    },
+    {
+      "factID": "...",
+      "recordedAt": "2025-04-15T13:01:37Z",
+      "payload": {
+        "kind": "possession",
+        "possession": {
+          "teamKey": "away",
+          "anchor": {
+            "kind": "videoClock",
+            "videoClock": { "elapsedSeconds": 97.0 },
+            // 終わりは任意。省けば消費側が導出する
+            "endVideoElapsedSeconds": 118.5
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+### トップレベルの任意フィールド（試合ファイル用）
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `generator` | Object? | | このファイルを書いたアプリ。`{ "name": String, "version": String, "build": String? }`（例: `{"name": "HandballRecorder", "version": "1.6.1", "build": "29"}`）。**配信物には乗せない**。アプリ間で試合を移す「試合ファイル」（`.handrec`。中身はこの schema と同一）がサポート用に書く — 「外部生成」と「自アプリ + version 差」を切り分けるためのもので、改竄防止ではない |
+
+任意フィールドの追加は `schemaVersion` を上げない（読む側の serde は未知のキーを無視するので、旧アプリも読める）。
+
+### `match.configuration` (tagged union)
+
+`kind` discriminator で case を分岐:
+
+| `kind` | サブペイロード | 説明 |
+|---|---|---|
+| `"timer"` | `timer.phaseDurationSeconds: Double` | タイマーモード (動画なし) |
+| `"video"` | `video.source: { provider, externalID, cloudIdentifier?, durationSeconds? }` | 動画モード (フル試合) |
+| `"videoHighlight"` | `videoHighlight.source: { provider, externalID, cloudIdentifier?, durationSeconds? }` | ハイライト経路 (内部経路フラグ、 通常 `/highlights/` で使う) |
+
+#### `source`
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `provider` | String | ✓ | `"youtube"` \| `"local"`。**配信物は `"youtube"` のみ**。`"local"` は試合ファイルだけに現れる（端末「写真」の動画。参照は端末固有で、別の端末では再生できない） |
+| `externalID` | String | ✓ | `youtube`: 動画 ID / `local`: PHAsset の localIdentifier |
+| `cloudIdentifier` | String? | | `local` のみ。PhotoKit の cloud identifier（端末をまたいで安定）。受け取った端末が同じ Apple ID で iCloud 写真を使っていれば、これをその端末の localIdentifier へ引き直して再生を復旧する。送り側で引けなければ省略 |
+| `durationSeconds` | Double? | | `local` のみ。送り側で紐付いていた動画の尺（秒）。受け取った端末で動画を選び直すとき、別の切り出しへ差し替えて記録の時刻が静かにずれるのを止めるために比べる |
+
+### `facts[]`
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `factID` | String? | | fact の同一性。**同一試合内で一意**（検証 CLI の `corpus/duplicateFactID`）。省略時はアプリ側が採番する |
+| `recordedAt` | Date | ✓ | アプリが fact を記録した実時刻（`date` とは独立） |
+| `payload` | tagged union | ✓ | 後述 |
+
+### `facts[].payload` (tagged union)
+
+| `kind` | サブペイロード |
+|---|---|
+| `"play"` | `play: SamplePlayFact` |
+| `"control"` | `control: SampleControlFact` |
+| `"possession"` | `possession: SamplePossessionFact` |
+
+#### `SamplePlayFact`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `kind` | String | `"goal"` / `"shotMissed"` / `"freeNote"` / `"yellowCard"` / `"twoMinuteSuspension"` / `"redCard"` |
+| `teamKey` | String? | `"home"` / `"away"` / null |
+| `playerKey` | String? | `teams.{home,away}.players[].key` |
+| `relatedPlayerKey` | String? | 同上 |
+| `anchor` | `SampleFactAnchor` | 後述 |
+| `title` | String? | `freeNote` 用の見出し |
+| `note` | String? | 自由記述 |
+
+#### `SampleControlFact`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `kind` | String | `"phaseStart"` / `"stoppage"` |
+| `phaseStart` | `{ kind: String }` | `kind = "regular"` / `"shootout"` |
+| `stoppage` | `{ stoppageKind: String, note: String? }` | `stoppageKind = "timeout"` / `"pause"` |
+| `anchor` | `SampleFactAnchor` | 後述。 `phaseStart` は end 必須、 `stoppage` は end optional |
+
+#### `SamplePossessionFact`
+
+**ポゼッション開始**（あるチームのポゼッションがそこから始まった、という点の事実）。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `teamKey` | String | `"home"` / `"away"`。**必須** (`SamplePlayFact.teamKey` と違い null 不可) |
+| `anchor` | `SampleFactAnchor` | 始まり。end 系は**任意** (後述) |
+
+判別子 (`kind`) を持たない。ポゼッションの fact は「開始」1 種類だけで、2 つ目が出た時点でどのみちスキーマ変更になるため、空の判別子を先置きしない。
+
+**`anchor` が指すのは「そのチームのプレーが動き出した瞬間」**。ターンオーバーやルーズボールの確保では保持した瞬間と一致するが、**得点・ボールアウトの後はスローオフ / スローインが実行された瞬間**であって、被得点の瞬間ではない。生成側と消費側でここがズレると**エラーにならず統計だけが静かに間違う**。
+
+旧仕様（被得点の瞬間を起点にしたもの）で作ったデータもそのまま有効（差は数秒で、検証エラーにはならない）。
+
+**場面別の起点**:
+
+| 場面 | 起点 |
+|---|---|
+| 得点の後 | スローオフが実行された瞬間 |
+| キーパーが持った（セーブ / 枠外のどちらでも） | **キーパーのスローが実行された瞬間** |
+| ディフェンス側のコートプレーヤーが取った | 取った瞬間 |
+| 攻撃側がリバウンドを拾って攻撃が続く | 拾った瞬間に**同じチームの開始をもう 1 件**置く（数える単位はチームの切り替わり回数なので 1 ポゼッションのまま） |
+
+キーパーだけスローに寄せるのは、**セーブと枠外が中継映像で見分けられない**ため（どちらも「キーパーが持って投げる」という同じ絵になる）。フィールドプレーヤーの奪取にこの曖昧さは無いので取った瞬間でよい。**既知の偏り**: セーブの場合、キーパーが保持していた数秒は直前のポゼッション（シュートを外した側）に足される。end を明示すれば消える。
+
+> **攻撃側のポゼッションはシュートがシューターの手を離れた瞬間に終わる**（上の偏りを消す end の置き方）。end を出せない生成側は省いてよい（end は任意）。
+
+**終わり (`anchor` の end 系) は任意**。書けるなら書き、出せないなら省く — どちらも正常な入力で、省いた場合は消費側が導出する。
+
+消費側の導出は **`明示 end` → `区間内の同チーム goal` → `次のポゼッション開始 / その phase の end`** の順で、いずれも最後の「次の開始 / phase end」で**クランプする**。したがって:
+
+- **end が次のポゼッション開始より後ろでも検証エラーにしない**。生成側によっては goal の時刻と次の開始を独立に推定するので、順序の逆転は起こりうる。消費側がクランプするので区間の重なりは起こりえない
+- **区間が隙間なく phase を覆う必要は無い**。隙間はボールデッド (得点後、次の攻撃が始まるまで) であって取りこぼしとは限らない
+- 検証されるのは **`start < end`** だけ (逆順 / 0 長は `possessionEndBeforeStart`)
+
+同じチームの `possession` が 2 件続くのは**矛盾ではなく 2 件目が冗長なだけ**で、ポゼッション数は「チームが切り替わった回数」で数える。
+
+### `SampleFactAnchor`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `kind` | String | `"matchClock"` / `"videoClock"` / `"both"` |
+| `matchClock` | `{ elapsedSeconds: Double }?` | 試合通算累積秒 |
+| `videoClock` | `{ elapsedSeconds: Double }?` | 動画再生位置 |
+| `endMatchElapsedSeconds` | Double? | 範囲の end (matchClock 側) |
+| `endVideoElapsedSeconds` | Double? | 範囲の end (videoClock 側) |
+
+end 系は `phaseStart` (必須) / `stoppage` (任意) / `possession` (任意) で使用。 `play` では両方 null（非 null は検証 CLI の `corpus/unexpectedAnchorEnd`。 デコードは値を黙って捨てるため、 書いても区間にはならない）。
+
+end の `kind` は start の `kind` を継承する (両方 nil なら range なし)。
+
+### `MatchClock` の累積秒
+
+`elapsedSeconds` は phase 内の秒数ではなく試合通算。例:
+- firstHalf (1800 秒) → matchClock 0..1800
+- secondHalf (1800 秒) → matchClock 1800..3600
+
+## `/highlights/index.json`
+
+```jsonc
+{
+  "schemaVersion": 2,
+  "highlights": [
+    {
+      "slug": "2026-04-19-bera-bera-vs-aula",
+      "displayName": "石川空選手の得点。",
+      "description": null,
+      "date": "2026-04-19T00:00:00Z",
+      "homeTeamName": "BERA BERA",
+      "awayTeamName": "AULA",
+      "factCount": 1,
+      "hasVideo": true
+    }
+  ]
+}
+```
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `factCount` | Int | 本体の facts 配列の長さ |
+| `date` | Date | 試合開始日時。本体の `match.date` と一致必須（`corpus/dateMismatch`） |
+| 他 | | `matches/index.json` と同等。`homeTeamName` / `awayTeamName` は必須 |
+
+`highlights` 配列は **`date` 降順**（新しい試合が上）で維持する（`corpus/indexNotDateDescending`）。アプリはソートせず配列順で描画するので、ここの順序が画面の並びになる。
+
+## `/highlights/{slug}.json`
+
+本体スキーマは `/matches/{slug}.json` と同一。 違いは:
+- `configuration.kind` は通常 `"videoHighlight"` (フル試合と区別)
+- `away.players` は空配列のことがある (home 側の選手だけ取り上げる場合)
+- アプリは読み込み時に `configuration.kind` を `"videoHighlight"` として扱う（本体が `"video"` でもハイライトになる）

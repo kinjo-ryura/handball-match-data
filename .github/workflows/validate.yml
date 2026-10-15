@@ -1,0 +1,47 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 既定の GITHUB_TOKEN を読み取りのみに絞る。この CI は配信データを検証するだけで、追記も push もしない。
+# リポジトリ設定の default_workflow_permissions も read だが、設定は UI から変えられるので workflow 側にも書く。
+permissions:
+  contents: read
+
+# Action は完全な commit SHA でピン留めする。可変タグは差し替えが効くので、タグを奪われるとランナーで
+# 任意のコードが走る。追随は Dependabot（.github/dependabot.yml）が SHA と末尾コメントの両方を書き換える。
+
+# 同一ブランチで走行中のジョブは新しい push で打ち切る。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    # 配信 JSON を読むだけで、クロスコンパイルもリンクも要らないので Linux ランナーで足りる。
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 配信データを checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: match-data
+
+      # 検証 CLI は handball-toolkit（public）が持つ。main を追うので、コア側で validators が
+      # 強化されればこの CI にもそのまま効く（逆に、toolkit の変更でこちらが赤くなることもある）。
+      - name: 検証 CLI（handball-toolkit）を checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kinjo-ryura/handball-toolkit
+          path: toolkit
+
+      # ubuntu ランナーにプリインストールされた rustup の stable を使う。`+stable` は toolkit の
+      # rust-toolchain.toml（iOS / wasm / Android のターゲット込み）を意図的に外すため — ここで要るのは
+      # ホスト向け CLI のビルドだけ。依存は serde / serde_json / chrono / uuid のみで、クリーンな debug
+      # ビルドで約 10 秒なので、キャッシュは置かない。
+      - name: 配信データを検証
+        working-directory: toolkit
+        # exit code は CLI 既定に従う: 0 = error なし（warning のみも通過）/ 1 = error あり / 2 = 使い方・パス誤り。
+        run: cargo +stable run -p handball-toolkit-cli -- validate ../match-data
