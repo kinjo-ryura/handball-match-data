@@ -203,7 +203,7 @@
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|
 | `tables[].id` | String | ✓ | 表の識別子（英数字と `-`）。同じ一覧の中で一意（`corpus/duplicateTableID`・`corpus/unsafeTableID`） |
-| `tables[].title` | String | ✓ | 表の題。アプリはこれを切替のラベルに出す（例: `"順位表"`） |
+| `tables[].title` | String | ✓ | 表の題。アプリはこれを切替のラベルに出す（例: `"順位表"`）。**4 字まで**（アプリは「試合」と表の題を同じ幅の切替に並べ、iPhone の縦では 5 字目から切れる） |
 | `tables[].columns[]` | Object[] | ✓ | 列の定義。1 列以上（`corpus/tableWithoutColumns`） |
 | `tables[].columns[].title` | String | ✓ | 列見出し |
 | `tables[].columns[].align` | String? | | `"leading"`（既定）/ `"trailing"` / `"center"`。数値の列は `trailing` |
